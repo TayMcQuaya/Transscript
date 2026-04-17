@@ -1,0 +1,2 @@
+openai-whisper
+tkinterdnd2>=0.4.0
