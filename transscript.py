@@ -43,9 +43,9 @@ except ImportError:
     DND_AVAILABLE = False
 
 MODELS = ["tiny", "base", "small", "medium"]
-DEFAULT_MODEL = "tiny"
-DEFAULT_OUTPUT_DIR = str(Path.home() / "Desktop" / "Transcripts")
+DEFAULT_MODEL = "base"
 DEFAULT_BROWSE_DIR = str(Path.home() / "Desktop")
+DEFAULT_EXPORT_DIR = str(Path.home() / "Desktop")
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".ogg"}
 SCRIPT_DIR = Path(__file__).parent
@@ -53,16 +53,11 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 
 MODEL_TOOLTIP = (
     "Which Whisper model to use.\n\n"
-    "• tiny   — fastest, rough accuracy. Best for quick drafts.\n"
-    "• base   — fast, okay accuracy. Good general default.\n"
+    "• tiny   — fastest, very rough. Quick drafts only.\n"
+    "• base   — fast, decent accuracy. RECOMMENDED for calls.\n"
     "• small  — slower, good accuracy. For important transcripts.\n"
     "• medium — slowest, best accuracy. Use when quality matters.\n\n"
-    "CPU-only on this machine, so 'tiny' or 'base' are the practical picks."
-)
-OUTPUT_TOOLTIP = (
-    "Where the .txt transcript file will be saved.\n\n"
-    "The filename matches the video's name (e.g. meeting.mp4 → meeting.txt).\n"
-    "Your choice is remembered between runs."
+    "CPU-only on this machine. 'base' is the practical default."
 )
 DROP_TOOLTIP = (
     "Drag a video or audio file here, or use Browse below.\n\n"
@@ -73,7 +68,10 @@ TRANSCRIBE_TOOLTIP = (
     "Runs on a background thread — the window stays usable while it works."
 )
 COPY_TOOLTIP = "Copy the full transcript to your clipboard."
-SAVE_TOOLTIP = "Save a copy of the transcript to a different location/filename."
+EXPORT_TOOLTIP = (
+    "Export the transcript to a .txt file at a location you choose.\n"
+    "Nothing is saved automatically — you must click Export to keep the result."
+)
 
 _MODEL_CACHE: dict[str, object] = {}
 
@@ -84,7 +82,7 @@ def load_config() -> dict:
             return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
-    return {"output_dir": DEFAULT_OUTPUT_DIR, "model": DEFAULT_MODEL}
+    return {"last_export_dir": DEFAULT_EXPORT_DIR, "model": DEFAULT_MODEL}
 
 
 def save_config(cfg: dict) -> None:
@@ -147,8 +145,13 @@ class Tooltip:
             self._tip = None
 
 
-def transcribe(video_path: str, model_name: str, output_dir: str,
-               status_cb=None) -> tuple[bool, str, str]:
+def transcribe(video_path: str, model_name: str,
+               status_cb=None) -> tuple[bool, str]:
+    """Run Whisper on the given file and return (ok, text_or_error).
+
+    Does NOT write anything to disk. The caller is responsible for
+    persisting the returned text via the Export button.
+    """
     try:
         import whisper
     except ImportError as e:
@@ -157,12 +160,7 @@ def transcribe(video_path: str, model_name: str, output_dir: str,
             "Fix: open cmd/PowerShell and run:\n"
             '  python -m pip install openai-whisper\n\n'
             f"Import error: {e}"
-        ), ""
-
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-    except OSError as e:
-        return False, f"Can't create output folder:\n{output_dir}\n\n{e}", ""
+        )
 
     try:
         if model_name in _MODEL_CACHE:
@@ -183,16 +181,10 @@ def transcribe(video_path: str, model_name: str, output_dir: str,
             verbose=None,
         )
     except Exception as e:
-        return False, f"Whisper failed:\n\n{type(e).__name__}: {e}\n\n{traceback.format_exc()}", ""
+        return False, f"Whisper failed:\n\n{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
 
     text = (result.get("text") or "").strip() + "\n"
-    txt_path = Path(output_dir) / (Path(video_path).stem + ".txt")
-    try:
-        txt_path.write_text(text, encoding="utf-8")
-    except OSError as e:
-        return False, f"Transcript generated but saving failed:\n{txt_path}\n\n{e}", ""
-
-    return True, text, str(txt_path)
+    return True, text
 
 
 class App:
@@ -205,7 +197,6 @@ class App:
         self.cfg = load_config()
         self.video_path: str | None = None
 
-        self.output_dir_var = StringVar(value=self.cfg.get("output_dir", DEFAULT_OUTPUT_DIR))
         self.model_var = StringVar(value=self.cfg.get("model", DEFAULT_MODEL))
         self.status_var = StringVar(value="Drop a video or click Browse to start.")
 
@@ -219,8 +210,8 @@ class App:
         drop_frame.pack(fill="x", **pad)
         self.drop_label = ttk.Label(
             drop_frame,
-            text=("Drag a video file here\nor click Browse below"
-                  if DND_AVAILABLE else "Click Browse below to choose a video"),
+            text=("Drag a video or audio file here or click Browse below"
+                  if DND_AVAILABLE else "Click Browse below to choose a video or audio file"),
             anchor="center", justify="center", padding=20,
         )
         self.drop_label.pack(fill="x")
@@ -240,7 +231,7 @@ class App:
         self.file_label = ttk.Label(file_row, text="(no file selected)", foreground="#666")
         self.file_label.pack(side="left", padx=10)
 
-        # Controls
+        # Controls — model picker only (output folder removed; export is manual)
         ctrl = ttk.Frame(self.root)
         ctrl.pack(fill="x", **pad)
         model_lbl = ttk.Label(ctrl, text="Model:")
@@ -252,16 +243,6 @@ class App:
         model_box.pack(side="left", padx=(4, 16))
         model_box.bind("<<ComboboxSelected>>", lambda _e: self._persist())
         Tooltip(model_box, MODEL_TOOLTIP)
-
-        out_lbl = ttk.Label(ctrl, text="Output folder:")
-        out_lbl.pack(side="left")
-        Tooltip(out_lbl, OUTPUT_TOOLTIP)
-        out_entry = ttk.Entry(ctrl, textvariable=self.output_dir_var, width=44)
-        out_entry.pack(side="left", padx=4)
-        Tooltip(out_entry, OUTPUT_TOOLTIP)
-        change_btn = ttk.Button(ctrl, text="Change…", command=self._pick_output_dir)
-        change_btn.pack(side="left")
-        Tooltip(change_btn, "Pick a different folder for saved transcripts.")
 
         # Action row
         action = ttk.Frame(self.root)
@@ -275,7 +256,7 @@ class App:
         self.progress.pack(side="left", padx=12)
         ttk.Label(action, textvariable=self.status_var).pack(side="left")
 
-        # Copy bar ABOVE the transcript box
+        # Copy bar above transcript
         copy_bar = ttk.Frame(self.root)
         copy_bar.pack(fill="x", padx=10, pady=(10, 0))
         ttk.Label(copy_bar, text="Transcript:", font=("Segoe UI", 10, "bold")).pack(side="left")
@@ -285,19 +266,21 @@ class App:
         )
         self.top_copy_btn.pack(side="right")
         Tooltip(self.top_copy_btn, COPY_TOOLTIP)
+        self.export_btn = ttk.Button(
+            copy_bar, text="Export…", command=self._export, state="disabled"
+        )
+        self.export_btn.pack(side="right", padx=(0, 8))
+        Tooltip(self.export_btn, EXPORT_TOOLTIP)
 
         # Transcript text
         self.text = ScrolledText(self.root, wrap="word", font=("Segoe UI", 10))
         self.text.pack(fill="both", expand=True, padx=10, pady=(2, 6))
 
-        # Footer row (Save As + saved indicator)
+        # Footer row — shows where the last export landed
         out = ttk.Frame(self.root)
         out.pack(fill="x", **pad)
-        self.saveas_btn = ttk.Button(out, text="Save As…", command=self._save_as, state="disabled")
-        self.saveas_btn.pack(side="left")
-        Tooltip(self.saveas_btn, SAVE_TOOLTIP)
-        self.saved_label = ttk.Label(out, text="", foreground="#080")
-        self.saved_label.pack(side="left", padx=12)
+        self.exported_label = ttk.Label(out, text="", foreground="#080")
+        self.exported_label.pack(side="left")
 
     # --- event handlers ---
 
@@ -331,33 +314,19 @@ class App:
         self.transcribe_btn.configure(state="normal")
         self.status_var.set("Ready. Click Transcribe when you're set.")
 
-    def _pick_output_dir(self) -> None:
-        initial = self.output_dir_var.get() or DEFAULT_OUTPUT_DIR
-        if not os.path.isdir(initial):
-            initial = DEFAULT_BROWSE_DIR
-        chosen = filedialog.askdirectory(title="Choose output folder", initialdir=initial)
-        if chosen:
-            self.output_dir_var.set(os.path.normpath(chosen))
-            self._persist()
-
     def _persist(self) -> None:
-        self.cfg["output_dir"] = self.output_dir_var.get()
         self.cfg["model"] = self.model_var.get()
         save_config(self.cfg)
 
     def _start_transcribe(self) -> None:
         if not self.video_path:
             return
-        out_dir = self.output_dir_var.get().strip()
-        if not out_dir:
-            messagebox.showerror("Missing output folder", "Pick an output folder first.")
-            return
         self._persist()
 
         self.transcribe_btn.configure(state="disabled")
         self.top_copy_btn.configure(state="disabled")
-        self.saveas_btn.configure(state="disabled")
-        self.saved_label.configure(text="")
+        self.export_btn.configure(state="disabled")
+        self.exported_label.configure(text="")
         self.text.delete("1.0", "end")
         self.progress.start(12)
 
@@ -368,13 +337,13 @@ class App:
             self.root.after(0, self.status_var.set, msg)
 
         def worker() -> None:
-            ok, payload, txt_path = transcribe(video, model, out_dir, status_cb)
-            self.root.after(0, self._on_done, ok, payload, txt_path)
+            ok, payload = transcribe(video, model, status_cb)
+            self.root.after(0, self._on_done, ok, payload)
 
         status_cb(f"Starting '{model}'…")
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_done(self, ok: bool, payload: str, txt_path: str) -> None:
+    def _on_done(self, ok: bool, payload: str) -> None:
         self.progress.stop()
         self.transcribe_btn.configure(state="normal")
         if not ok:
@@ -383,9 +352,8 @@ class App:
             return
         self.text.insert("1.0", payload)
         self.top_copy_btn.configure(state="normal")
-        self.saveas_btn.configure(state="normal")
-        self.status_var.set("Done.")
-        self.saved_label.configure(text=f"Saved: {txt_path}")
+        self.export_btn.configure(state="normal")
+        self.status_var.set("Done. Click Export… to save the transcript.")
 
     def _copy(self) -> None:
         text = self.text.get("1.0", "end-1c")
@@ -393,25 +361,38 @@ class App:
         self.root.clipboard_append(text)
         self.status_var.set("Copied to clipboard.")
 
-    def _save_as(self) -> None:
+    def _export(self) -> None:
         text = self.text.get("1.0", "end-1c")
         if not text.strip():
             return
-        default_name = Path(self.video_path).stem + ".txt" if self.video_path else "transcript.txt"
+        default_name = (
+            Path(self.video_path).stem + ".txt"
+            if self.video_path else "transcript.txt"
+        )
+        last_dir = self.cfg.get("last_export_dir") or DEFAULT_EXPORT_DIR
+        if not os.path.isdir(last_dir):
+            last_dir = DEFAULT_EXPORT_DIR
         path = filedialog.asksaveasfilename(
-            title="Save transcript as…",
+            title="Export transcript as…",
             defaultextension=".txt",
             initialfile=default_name,
-            initialdir=self.output_dir_var.get() or DEFAULT_OUTPUT_DIR,
-            filetypes=[("Text", "*.txt"), ("All files", "*.*")],
+            initialdir=last_dir,
+            filetypes=[
+                ("Text", "*.txt"),
+                ("Markdown", "*.md"),
+                ("All files", "*.*"),
+            ],
         )
         if not path:
             return
         try:
             Path(path).write_text(text, encoding="utf-8")
-            self.saved_label.configure(text=f"Saved: {path}")
+            self.cfg["last_export_dir"] = str(Path(path).parent)
+            save_config(self.cfg)
+            self.exported_label.configure(text=f"Exported: {path}")
+            self.status_var.set("Exported.")
         except OSError as e:
-            messagebox.showerror("Save failed", str(e))
+            messagebox.showerror("Export failed", str(e))
 
 
 def main() -> None:

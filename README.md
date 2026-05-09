@@ -13,7 +13,7 @@ A tiny Windows desktop app that turns a video (or audio) file into a text transc
 
 ### Will this run on other machines?
 
-Yes. Nothing is hardcoded to a specific user or install path — the default output folder resolves to `%USERPROFILE%\Desktop\Transcripts`, and the launchers find `pythonw.exe` via PATH. To move this app to another Windows PC:
+Yes. Nothing is hardcoded to a specific user or install path — the launchers find `pythonw.exe` via PATH. To move this app to another Windows PC:
 
 1. Copy the whole `Transscript\` folder to the new machine.
 2. Install Python 3.10+ and make sure it's on PATH (`where python` should find it).
@@ -65,24 +65,22 @@ Three ways, all from the project folder:
 
 2. **Pick a model.**
 
-   | Model    | Speed   | Accuracy | When to use                |
-   | -------- | ------- | -------- | -------------------------- |
-   | `tiny`   | Fastest | Rough    | **Default — quick drafts** |
-   | `base`   | Fast    | OK       | Good general balance       |
-   | `small`  | Medium  | Good     | Important transcripts      |
-   | `medium` | Slow    | Better   | When quality matters most  |
+   | Model    | Speed   | Accuracy   | When to use                  |
+   | -------- | ------- | ---------- | ---------------------------- |
+   | `tiny`   | Fastest | Very rough | Quick drafts only            |
+   | `base`   | Fast    | Decent     | **Recommended default**      |
+   | `small`  | Medium  | Good       | Important transcripts        |
+   | `medium` | Slow    | Better     | When quality matters most    |
 
    > Whisper runs on **CPU** unless a compatible NVIDIA GPU + up-to-date driver is available. On CPU, expect roughly real-time: a 10-min clip at `base` may take 5–10 minutes.
 
-3. **Pick an output folder.** Default is `%USERPROFILE%\Desktop\Transcripts\` (created on first transcription). Click **Change…** to pick a different one. Your choice is remembered across runs (stored in `config.json`).
+3. **Click Transcribe.** The progress bar spins, status shows what's happening. On first use of a model, it'll say "Loading '<model>' model (first run downloads weights)…" — that's the one-time cache fill.
 
-4. **Click Transcribe.** The progress bar spins, status shows what's happening. On first use of a model, it'll say "Loading '<model>' model (first run downloads weights)…" — that's the one-time cache fill.
-
-5. **When it's done:**
+4. **When it's done:**
    - The transcript appears in the text box — scroll, edit, select freely.
-   - A `.txt` is already saved in the output folder with the same name as the video (e.g. `meeting.mp4` → `meeting.txt`).
-   - **Copy entire transcript** (big button above the text) grabs the whole thing to your clipboard.
-   - **Save As…** lets you save a second copy anywhere.
+   - **Nothing is saved automatically.** The result lives only in the window until you choose to keep it.
+   - **Copy entire transcript** (top-right) grabs the whole thing to your clipboard.
+   - **Export…** (next to Copy) opens a Save dialog — pick any folder and filename, default suggestion matches the video's name (e.g. `meeting.mp4` → `meeting.txt`). The folder you last exported to is remembered for next time.
 
 ---
 
@@ -94,7 +92,7 @@ Transscript/
 ├── requirements.txt    # openai-whisper + tkinterdnd2
 ├── run.vbs             # Silent launcher (recommended)
 ├── run.bat             # Alternate launcher
-├── config.json         # Auto-created; remembers your output folder + model
+├── config.json         # Auto-created; remembers your last export folder + model
 └── README.md           # This file
 ```
 
@@ -102,7 +100,7 @@ Transscript/
 
 ## How it works
 
-`transscript.py` imports `whisper` directly (it's a Python library) and calls `model.transcribe(path)`. The result is written to `<output_dir>/<video_stem>.txt` and also loaded into the GUI.
+`transscript.py` imports `whisper` directly (it's a Python library) and calls `model.transcribe(path)`. The result is loaded into the GUI as in-memory text — nothing is saved to disk until you click **Export…**, which opens a save dialog so you choose the location each time.
 
 Model loading and transcription run on a background thread, so the UI stays responsive and you can copy-paste as soon as it's done.
 
@@ -140,7 +138,8 @@ Everything lives in `transscript.py`. A few easy tweaks:
 
 | Want to…                                             | Edit this                                                 |
 | ---------------------------------------------------- | --------------------------------------------------------- |
-| Change default output folder                         | `DEFAULT_OUTPUT_DIR` near the top                         |
+| Change default starting folder for Export dialog     | `DEFAULT_EXPORT_DIR` near the top                         |
+| Change default model for new installs                | `DEFAULT_MODEL` near the top                              |
 | Add the `large` model to the dropdown                | Append `"large"` to `MODELS`                              |
 | Transcribe non-English                               | Remove `language="en"` from the `model.transcribe()` call |
 | Keep more transcript metadata (timestamps, segments) | Use `result["segments"]` instead of `result["text"]`      |
@@ -149,6 +148,6 @@ Everything lives in `transscript.py`. A few easy tweaks:
 
 ## Quick reference
 
-- **Default transcripts folder:** `%USERPROFILE%\Desktop\Transcripts\`
+- **Default starting folder for Export dialog:** `%USERPROFILE%\Desktop` (then remembers your last choice)
 - **Whisper model cache:** `%USERPROFILE%\.cache\whisper\`
 - **Config file:** `config.json` in the project folder (auto-managed, safe to delete to reset)
